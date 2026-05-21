@@ -1,0 +1,1048 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>사내판매 오더 — Heineken Korea</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable.min.css">
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#F4EFE3;font-family:'Pretendard Variable','Pretendard',-apple-system,sans-serif}
+  input[type=number]::-webkit-inner-spin-button,
+  input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+  input[type=number]{-moz-appearance:textfield}
+  @keyframes fd{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:translateY(0)}}
+  .afd{animation:fd .25s ease-out}
+  #loading{display:flex;align-items:center;justify-content:center;height:100vh;font-size:14px;color:#6F6A5E}
+</style>
+</head>
+<body>
+<div id="loading">앱을 불러오는 중...</div>
+<div id="root" style="display:none"></div>
+<script type="text/babel">
+const { useState, useMemo, useEffect, useCallback, useRef } = React;
+
+/* ── 상품 ─────────────────────────────────────────────────────── */
+var PRODUCTS = [
+  { code:'P1', name:'하이네켄 실버 500ml', pack:'6x4캔', sku:'8 712000 057190', price:36000, exp:'2026-11-28' },
+  { code:'P2', name:'하이네켄 실버 330ml', pack:'4x6캔', sku:'8 712000 057169', price:25000, exp:'2026-09-01' },
+  { code:'P3', name:'하이네켄 0.0 500ml',  pack:'4x6캔', sku:'8 712000 056896', price:20500, exp:'2026-12-15' },
+  { code:'P4', name:'비라모레띠 440ml',    pack:'6x4캔', sku:'5 035766 064442', price:33000, exp:'2026-08-31' },
+  { code:'P5', name:'설화 500ml',          pack:'6x4캔', sku:'6 949352 256632', price:36000, exp:'2026-08-18' },
+];
+var LOCS  = ['택배','Seoul Office','Busan Office','Daejeon Office','Gwangju Office','Daegu Office','Jeju Office'];
+var TEAMS = ['GM','HR','MKT','FIN&IT','On Seoul','Off Seoul','DDT','NST','Busan','Daegu','Daejeon','Supply Chain','Gwangju','Jeju','DT','TM&O'];
+var SHIP_FEE = 4500;
+var BIZ_MAIL = 'younghan.chae@heineken.com';
+
+function getProd(code) { for (var i=0;i<PRODUCTS.length;i++) if (PRODUCTS[i].code===code) return PRODUCTS[i]; return null; }
+function fullName(p) { return p.name+' '+p.pack+' ('+p.sku+')'; }
+function fmt(n) { return new Intl.NumberFormat('ko-KR').format(Math.round(n||0)); }
+
+/* ── 색상 ─────────────────────────────────────────────────────── */
+var C = {
+  bg:'#F4EFE3', surface:'#FFFFFF', inputBg:'#FBF8EF',
+  line:'#DDD4BD', soft:'#EBE3D0',
+  ink:'#1B1B17', muted:'#6F6A5E',
+  green:'#0E3B2C', greenD:'#082519',
+  copper:'#A8693A', copperL:'#E8D2B2', copperBg:'#F5E7D3',
+  red:'#8C2A2A', redBg:'#FDEAEA',
+};
+var FONT = "'Pretendard Variable','Pretendard',-apple-system,sans-serif";
+
+/* ── 유틸 ─────────────────────────────────────────────────────── */
+function uid(n) {
+  n = n || 8;
+  var c='ABCDEFGHJKLMNPQRSTUVWXYZ23456789', r='';
+  for (var i=0;i<n;i++) r+=c[Math.floor(Math.random()*c.length)];
+  return r;
+}
+function fmtDT(iso) {
+  if (!iso) return '';
+  var d = new Date(iso);
+  var date = d.getFullYear()+'년 '+(d.getMonth()+1)+'월 '+d.getDate()+'일';
+  var h=d.getHours(), mi=d.getMinutes();
+  if (h===0&&mi===0) return date;
+  var ap=h<12?'오전':'오후', hh=h%12||12, mm=mi>0?':'+String(mi).padStart(2,'0'):'';
+  return date+' '+ap+' '+hh+mm+'시';
+}
+function fmtAgo(ts) {
+  var m=Math.floor((Date.now()-ts)/60000);
+  if (m<1) return '방금'; if (m<60) return m+'분 전';
+  var h=Math.floor(m/60); if (h<24) return h+'시간 전';
+  return Math.floor(h/24)+'일 전';
+}
+function isExpired(iso) { return iso ? Date.now()>new Date(iso).getTime() : false; }
+function defaultDL() {
+  var d=new Date(); d.setDate(d.getDate()+7); d.setHours(12,0,0,0);
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+'T12:00';
+}
+
+/* ── 카운트다운 ────────────────────────────────────────────────── */
+function useCountdown(iso) {
+  var init = iso ? new Date(iso).getTime()-Date.now() : -1;
+  var st = useState(init);
+  var diff=st[0], setDiff=st[1];
+  useEffect(function() {
+    if (!iso) return;
+    var id=setInterval(function(){ setDiff(new Date(iso).getTime()-Date.now()); },1000);
+    return function(){ clearInterval(id); };
+  }, [iso]);
+  if (diff<=0) return null;
+  var s=Math.floor(diff/1000), d=Math.floor(s/86400), h=Math.floor((s%86400)/3600), m=Math.floor((s%3600)/60), ss=s%60;
+  if (d>0) return d+'일 '+h+'시간 '+m+'분';
+  if (h>0) return h+'시간 '+m+'분 '+ss+'초';
+  return m+'분 '+ss+'초';
+}
+
+/* ── 인메모리 DB ───────────────────────────────────────────────── */
+var DB = { groups:{}, orders:{}, myGrps:{}, myOrds:{} };
+
+function dbSaveGroup(g)  { DB.groups[g.id]=g; trySaveWS('g:'+g.id, g); }
+function dbGetGroup(gid) { return DB.groups[gid]||null; }
+function dbDelGroup(gid) { delete DB.groups[gid]; delete DB.orders[gid]; tryDelWS('g:'+gid); }
+
+function dbSaveOrder(gid,o) { if (!DB.orders[gid]) DB.orders[gid]={}; DB.orders[gid][o.id]=o; trySaveWS('o:'+gid+':'+o.id, o); }
+function dbGetOrders(gid)   { return Object.values(DB.orders[gid]||{}).sort(function(a,b){return (b.submittedAt||0)-(a.submittedAt||0);}); }
+function dbDelOrder(gid,oid){ if (DB.orders[gid]) delete DB.orders[gid][oid]; tryDelWS('o:'+gid+':'+oid); }
+function dbDelGroupOrders(gid){ delete DB.orders[gid]; }
+
+function dbSaveMyGrp(info) { DB.myGrps[info.gid]=info; }
+function dbDelMyGrp(gid)   { delete DB.myGrps[gid]; }
+function dbGetMyGrps()     { return Object.values(DB.myGrps).sort(function(a,b){return b.createdAt-a.createdAt;}); }
+function dbMarkOrd(gid,oid)  { if (!DB.myOrds[gid]) DB.myOrds[gid]={}; DB.myOrds[gid][oid]=true; }
+function dbUnmarkOrd(gid,oid){ if (DB.myOrds[gid]) delete DB.myOrds[gid][oid]; }
+function dbMyOrdIds(gid)     { return DB.myOrds[gid]||{}; }
+
+/* window.storage 백업 (실패해도 조용히 무시) */
+function trySaveWS(key, val) {
+  try { if (window.storage) window.storage.set('bop:'+key, JSON.stringify(val), true); } catch(e){}
+}
+function tryDelWS(key) {
+  try { if (window.storage) window.storage.delete('bop:'+key, true); } catch(e){}
+}
+function tryGetWS(key, cb) {
+  try {
+    if (!window.storage) { cb(null); return; }
+    window.storage.get('bop:'+key, true).then(function(r) {
+      try { cb(r ? JSON.parse(r.value) : null); } catch(e){ cb(null); }
+    }).catch(function(){ cb(null); });
+  } catch(e){ cb(null); }
+}
+
+/* 그룹 로드: 메모리 먼저, 없으면 WS */
+function loadGroup(gid, cb) {
+  var g = dbGetGroup(gid);
+  if (g) { cb(g); return; }
+  tryGetWS('g:'+gid, function(val) {
+    if (val) { DB.groups[val.id]=val; }
+    cb(val);
+  });
+}
+
+/* 주문 로드: 메모리 먼저, 없으면 WS list */
+function loadOrders(gid, cb) {
+  var fromMem = dbGetOrders(gid);
+  if (fromMem.length > 0) { cb(fromMem); return; }
+  try {
+    if (!window.storage) { cb(fromMem); return; }
+    window.storage.list('bop:o:'+gid+':', true).then(function(r) {
+      var keys = (r && r.keys) ? r.keys : [];
+      if (!keys.length) { cb(fromMem); return; }
+      var results = [], done = 0;
+      keys.forEach(function(k) {
+        var shortKey = k.replace('bop:','');
+        tryGetWS(shortKey, function(val) {
+          if (val) results.push(val);
+          done++;
+          if (done===keys.length) {
+            results.forEach(function(o){ if (!DB.orders[gid]) DB.orders[gid]={}; DB.orders[gid][o.id]=o; });
+            cb(results.sort(function(a,b){return (b.submittedAt||0)-(a.submittedAt||0);}));
+          }
+        });
+      });
+    }).catch(function(){ cb(fromMem); });
+  } catch(e){ cb(fromMem); }
+}
+
+/* ── 라우팅 ────────────────────────────────────────────────────── */
+function readInitialRoute() {
+  try {
+    var hash=(window.location.hash||'').replace('#','');
+    if (!hash) return {view:'home',gid:null,token:null};
+    var p={};
+    hash.split('&').forEach(function(kv){ var i=kv.indexOf('='); if(i>0) p[kv.slice(0,i)]=decodeURIComponent(kv.slice(i+1)); });
+    if (p.g) return {view:p.k?'admin':'guest', gid:p.g, token:p.k||null};
+  } catch(e){}
+  return {view:'home',gid:null,token:null};
+}
+
+/* ── 주문 계산 ─────────────────────────────────────────────────── */
+function calcOrder(order) {
+  var beer=0,ship=0,qty=0,dqty=0;
+  var items = order.items||[];
+  for (var i=0;i<items.length;i++) {
+    var it=items[i], p=getProd(it.productCode), q=Number(it.qty)||0;
+    if (!p||q<=0) continue;
+    beer+=p.price*q; qty+=q;
+    if (it.location==='택배'){ ship+=q*SHIP_FEE; dqty+=q; }
+  }
+  return {beer:beer,ship:ship,qty:qty,dqty:dqty,grand:beer+ship};
+}
+function calcAll(orders) {
+  var a={beer:0,ship:0,qty:0,dqty:0,grand:0};
+  for (var i=0;i<orders.length;i++){ var t=calcOrder(orders[i]); a.beer+=t.beer;a.ship+=t.ship;a.qty+=t.qty;a.dqty+=t.dqty;a.grand+=t.grand; }
+  return a;
+}
+
+/* ── 엑셀 다운로드 (base64 data URL - iframe 호환) ─────────────── */
+function downloadExcel(group, orders) {
+  var rows=[];
+  for (var oi=0;oi<orders.length;oi++) {
+    var order=orders[oi], items=order.items||[];
+    for (var ii=0;ii<items.length;ii++) {
+      var it=items[ii], p=getProd(it.productCode), q=Number(it.qty)||0;
+      if (!p||q<=0) continue;
+      var isShip=it.location==='택배';
+      var rec = order.recipient || {};
+      rows.push([
+        rows.length+1, group.organizer.team, group.organizer.name, it.location,
+        fullName(p), q, p.price*q, isShip?q*SHIP_FEE:0,
+        isShip?group.organizer.phone:'',
+        isShip?(rec.name||order.ordererName||''):'',
+        isShip?(rec.phone||order.ordererPhone||''):'',
+        isShip?(rec.zip||''):'',
+        isShip?(rec.addr||''):'',
+        it.note||'',
+      ]);
+    }
+  }
+  var tb=0,ts=0,tq=0,td=0;
+  for (var i=0;i<rows.length;i++){ tb+=rows[i][6];ts+=rows[i][7];tq+=rows[i][5];if(rows[i][3]==='택배')td+=rows[i][5]; }
+
+  var notes=[
+    ['주문취합 이메일 : 채영한',BIZ_MAIL,'',''],
+    ['주문 마감 : '+fmtDT(group.deadline),'','',''],
+    ['입금 마감 : '+fmtDT(group.deadline),'','',''],['','','',''],
+    ['맥주값 입금계좌 : 신한은행 100-032-200824 (주)엠케이펍','','','입금자명은 반드시 신청직원명으로'],
+    ['택배비 입금계좌 : 3333-223-995689 카카오뱅크 박종성','','',''],
+    ['도서산간/제주지역 택배 발송 시 추가 비용 발생하므로','','',''],
+    ['해당 경우 취합 후 추가 입금 요청 예정','','',''],['','','',''],
+    ['수령지 항목에서 택배 또는 수령할 오피스 선택 가능','','',''],
+    [' CJ 택배 배송 출발 시 최대 4 영업일 이후에도 미도착시 김학준 차장에게 팀즈 연락 부탁드립니다.','','',''],
+    ['서울오피스는 지하 4층 창고 앞','','서울: 오후 12시까지 수령 가능',''],
+    ['그 외 오피스는 각 오피스 수령장소','','',''],['','','',''],
+    ['하기 입력부분은 녹색과 붉은색 부분만 입력 가능함','','',''],['','','',''],
+    ['좌측 리스트는 하기 입력사항 입력 시 자동으로 맥주값과 택배비','','',''],
+    ['합산하여 표시하도록 되어 있음. 20명 이상인 부서는 파일 2개로','','',''],
+    ['나눠서 제출 요망','','',''],
+    ['만약 같은 이름이 두 번 나오는 경우 이름 오탈자 확인 요망','','',''],
+  ];
+  var aoa=[];
+  aoa.push(['직원명','주문수 / \n택배수','총 맥주값','총 택배비','주의사항 - 주문/입금기한 엄수!','','','','숨김처리 예정 -->','','','','주문수량','택배수량']);
+  for (var ni=0;ni<20;ni++) {
+    var row=new Array(14).fill('');
+    if (ni===0){row[0]=group.organizer.name;row[1]=tq+' / '+td;row[2]=tb;row[3]=ts;row[12]=tq;row[13]=td;}
+    else{row[1]='0 / 0';row[2]=0;row[3]=0;row[12]=0;row[13]=0;}
+    var n=notes[ni]||[]; for(var nj=0;nj<n.length;nj++) row[4+nj]=n[nj];
+    aoa.push(row);
+  }
+  aoa.push([]);
+  var sect=new Array(14).fill(''); sect[0]='*입력되어 있는 내용은 참고용이므로, 지우고 사용'; sect[8]='택배 시 입력 정보'; aoa.push(sect);
+  aoa.push(['연번','부서명','신청자(직원) 이름','수령지','신청품목','수량','맥주값','택배비','신청자(직원) 휴대폰 번호','배송 받는 사람 성함','배송 받는 사람 연락처','배송 받는 사람 주소 > 우편번호 (5자리)','배송 받는 사람 주소 (도로명 주소, 상세주소까지 명확히 기재)','기타 의견 있으시면 글을 남겨주세요. (선택사항)']);
+  for (var ri=0;ri<rows.length;ri++) aoa.push(rows[ri]);
+  for (var pi=rows.length+1;pi<=400;pi++) aoa.push([pi,'','','','','',0,0,'','','','','','']);
+
+  var ws=XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols']=[16,16,16,14,50,8,14,12,20,16,18,18,50,30].map(function(w){return{wch:w};});
+  function sf(c){if(ws[c]&&typeof ws[c].v==='number')ws[c].z='#,##0';}
+  for(var r=2;r<=21;r++){sf('C'+r);sf('D'+r);}
+  for(var rr=25;rr<=425;rr++){sf('G'+rr);sf('H'+rr);}
+
+  var wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'Sheet1');
+
+  /* base64 data URL 방식 - iframe sandbox에서도 동작 */
+  try {
+    var b64=XLSX.write(wb,{bookType:'xlsx',type:'base64'});
+    var a=document.createElement('a');
+    a.setAttribute('href','data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,'+b64);
+    a.setAttribute('download','사내판매_오더_'+group.organizer.name+'_'+group.id+'.xlsx');
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function(){document.body.removeChild(a);},500);
+  } catch(e) {
+    alert('다운로드 오류: '+e.message+'\n\n브라우저에서 직접 열기를 시도합니다.');
+    try {
+      var b64b=XLSX.write(wb,{bookType:'xlsx',type:'base64'});
+      window.open('data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,'+b64b);
+    } catch(e2){}
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   앱 루트
+══════════════════════════════════════════════════════════════ */
+function App() {
+  var routeSt=useState(readInitialRoute); var route=routeSt[0]; var setRoute=routeSt[1];
+  var nav=useCallback(function(view,gid,token){ setRoute({view:view,gid:gid||null,token:token||null}); },[]);
+
+  useEffect(function(){
+    if (!document.getElementById('pf')) {
+      var l=document.createElement('link');l.id='pf';l.rel='stylesheet';
+      l.href='https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable.min.css';
+      document.head.appendChild(l);
+    }
+    if (!document.getElementById('gs')) {
+      var s=document.createElement('style');s.id='gs';
+      s.textContent='*{box-sizing:border-box}input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none}input[type=number]{-moz-appearance:textfield}@keyframes fd{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:translateY(0)}}.afd{animation:fd .25s ease-out}';
+      document.head.appendChild(s);
+    }
+  },[]);
+
+  var v=route.view;
+  return React.createElement('div',{style:{minHeight:'100vh',backgroundColor:C.bg,fontFamily:FONT,color:C.ink}},
+    React.createElement('div',{style:{position:'fixed',inset:0,zIndex:0,opacity:.2,pointerEvents:'none',backgroundImage:'radial-gradient('+C.line+' 0.5px,transparent 0.5px)',backgroundSize:'14px 14px'}}),
+    React.createElement('div',{style:{position:'relative',zIndex:1,maxWidth:700,margin:'0 auto',padding:'28px 16px 60px'}},
+      v==='create' ? React.createElement(CreateView,{nav:nav}) :
+      v==='admin'  ? React.createElement(AdminView,{nav:nav,gid:route.gid,token:route.token}) :
+      v==='guest'  ? React.createElement(GuestView,{nav:nav,gid:route.gid}) :
+                     React.createElement(HomeView,{nav:nav})
+    )
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   홈
+══════════════════════════════════════════════════════════════ */
+function HomeView(props) {
+  var nav=props.nav;
+  var s1=useState(dbGetMyGrps); var groups=s1[0]; var setGroups=s1[1];
+  var s2=useState(''); var code=s2[0]; var setCode=s2[1];
+  var s3=useState(''); var err=s3[0]; var setErr=s3[1];
+  var s4=useState(false); var joining=s4[0]; var setJoining=s4[1];
+
+  function refreshGroups(){ setGroups(dbGetMyGrps()); }
+
+  function join() {
+    var c=code.trim().toUpperCase();
+    if (!c){ setErr('코드를 입력해주세요.'); return; }
+    setJoining(true); setErr('');
+    loadGroup(c, function(g) {
+      setJoining(false);
+      if (!g){ setErr('그룹을 찾을 수 없어요. 코드를 다시 확인해주세요.'); return; }
+      nav('guest', c);
+    });
+  }
+
+  return (
+    <div className="afd">
+      <Brand />
+      <h1 style={{fontSize:30,fontWeight:800,color:C.green,letterSpacing:'-0.02em',lineHeight:1.25,marginBottom:10}}>
+        함께 모아 주문하는<br />사내판매 오더
+      </h1>
+      <p style={{fontSize:13,color:C.muted,lineHeight:1.7,marginBottom:28}}>
+        그룹을 만들어 코드를 공유하면, 지인들이 각자 주문을 추가합니다.<br />
+        주문이 모이면 엑셀 한 장으로 추출해 제출하세요.
+      </p>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14,marginBottom:28}}>
+        <GCard onClick={function(){nav('create');}}>
+          <div style={{fontSize:10,fontWeight:700,letterSpacing:'0.2em',textTransform:'uppercase',color:C.copperL,marginBottom:6}}>호스트</div>
+          <div style={{fontSize:16,fontWeight:700,marginBottom:3}}>주문 그룹 만들기</div>
+          <div style={{fontSize:11,color:C.copperL,opacity:.85,lineHeight:1.4}}>내가 직원으로서 취합·제출합니다.</div>
+        </GCard>
+        <div style={{borderRadius:12,border:'2px solid '+C.line,backgroundColor:C.surface,padding:18}}>
+          <div style={{fontSize:10,fontWeight:700,letterSpacing:'0.2em',textTransform:'uppercase',color:C.copper,marginBottom:6}}>참여</div>
+          <div style={{fontSize:15,fontWeight:700,color:C.ink,marginBottom:10}}>코드로 참여</div>
+          <div style={{display:'flex',gap:8}}>
+            <input value={code} onChange={function(e){setCode(e.target.value);setErr('');}}
+              onKeyDown={function(e){if(e.key==='Enter')join();}}
+              placeholder="8자리 코드"
+              style={{flex:1,minWidth:0,borderRadius:7,border:'1px solid '+C.line,padding:'8px 11px',fontSize:14,backgroundColor:C.inputBg,color:C.ink,outline:'none',fontFamily:'monospace',letterSpacing:'0.1em'}} />
+            <button onClick={join} disabled={joining}
+              style={{borderRadius:7,backgroundColor:C.copper,color:C.surface,border:'none',padding:'8px 14px',fontSize:13,fontWeight:700,cursor:'pointer'}}>
+              {joining ? '...' : '참여'}
+            </button>
+          </div>
+          {err && <div style={{fontSize:12,color:C.red,marginTop:6}}>{err}</div>}
+        </div>
+      </div>
+
+      {groups.length > 0 && (
+        <section style={{marginBottom:28}}>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:10,color:C.ink}}>내가 만든 그룹</div>
+          <div style={{display:'flex',flexDirection:'column',gap:8}}>
+            {groups.map(function(g) {
+              return (
+                <button key={g.gid} onClick={function(){nav('admin',g.gid,g.adminToken);}}
+                  style={{textAlign:'left',borderRadius:10,border:'1px solid '+C.line,backgroundColor:C.surface,padding:'13px 15px',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+                  <div>
+                    <div style={{fontSize:14,fontWeight:600,color:C.ink}}>{g.name}</div>
+                    <div style={{fontSize:12,color:C.muted,marginTop:2}}>코드: <strong style={{fontFamily:'monospace',letterSpacing:'0.08em'}}>{g.gid}</strong> · {fmtAgo(g.createdAt)} 생성</div>
+                  </div>
+                  <span style={{color:C.copper}}>→</span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      <div style={{borderRadius:8,backgroundColor:'#FFF8EC',border:'1px solid #E8D080',padding:'10px 14px',fontSize:12,color:'#7A6020',lineHeight:1.6}}>
+        💡 같은 앱을 사용하는 기기끼리 코드로 참여할 수 있어요.
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   그룹 생성
+══════════════════════════════════════════════════════════════ */
+function CreateView(props) {
+  var nav=props.nav;
+  var s1=useState(''); var gname=s1[0]; var setGname=s1[1];
+  var s2=useState(''); var orgName=s2[0]; var setOrgName=s2[1];
+  var s3=useState(''); var team=s3[0]; var setTeam=s3[1];
+  var s4=useState(''); var phone=s4[0]; var setPhone=s4[1];
+  var s5=useState(defaultDL()); var deadline=s5[0]; var setDeadline=s5[1];
+  var s6=useState(''); var err=s6[0]; var setErr=s6[1];
+
+  function create() {
+    if (!gname.trim()){setErr('그룹 이름을 입력해주세요.');return;}
+    if (!orgName.trim()){setErr('이름을 입력해주세요.');return;}
+    if (!team){setErr('부서를 선택해주세요.');return;}
+    if (!deadline){setErr('마감 일시를 설정해주세요.');return;}
+    setErr('');
+    var gid=uid(8), adminToken=uid(16);
+    var group={id:gid,name:gname.trim(),deadline:deadline,adminToken:adminToken,createdAt:Date.now(),
+      organizer:{name:orgName.trim(),team:team,phone:phone.trim()}};
+    dbSaveGroup(group);
+    dbSaveMyGrp({gid:gid,name:group.name,adminToken:adminToken,createdAt:group.createdAt});
+    nav('admin',gid,adminToken);
+  }
+
+  return (
+    <div className="afd">
+      <BackBtn onClick={function(){nav('home');}} label="홈으로" />
+      <h1 style={{fontSize:26,fontWeight:800,color:C.green,margin:'14px 0 6px'}}>주문 그룹 만들기</h1>
+      <p style={{fontSize:13,color:C.muted,marginBottom:24}}>여기 입력한 직원 정보로 회사에 제출됩니다.</p>
+      <Card title="그룹 정보" no="01">
+        <Field label="그룹 이름" required>
+          <Inp value={gname} onChange={function(v){setGname(v);setErr('');}} />
+        </Field>
+        <div style={{marginTop:14}}>
+          <Field label="주문 마감 일시" required hint="이 시간 이후 주문 자동 차단">
+            <input type="datetime-local" value={deadline} onChange={function(e){setDeadline(e.target.value);}}
+              style={{width:'100%',borderRadius:8,border:'1px solid '+C.line,padding:'10px 12px',fontSize:13,backgroundColor:C.inputBg,color:C.ink,outline:'none',fontFamily:FONT}} />
+          </Field>
+        </div>
+      </Card>
+      <Card title="호스트 (직원) 정보" no="02">
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14}}>
+          <Field label="이름" required><Inp value={orgName} onChange={function(v){setOrgName(v);setErr('');}} /></Field>
+          <Field label="부서" required><Sel value={team} onChange={function(v){setTeam(v);setErr('');}} options={TEAMS} ph="부서 선택" /></Field>
+        </div>
+        <div style={{marginTop:14}}>
+          <Field label="휴대폰 번호" hint="택배 배송 조율 시 사용">
+            <Inp value={phone} onChange={setPhone} type="tel" />
+          </Field>
+        </div>
+      </Card>
+      {err && <ErrBox>{err}</ErrBox>}
+      <GBtn onClick={create}>그룹 만들고 코드 받기</GBtn>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   관리자
+══════════════════════════════════════════════════════════════ */
+function AdminView(props) {
+  var nav=props.nav, gid=props.gid, token=props.token;
+  var s1=useState(null); var group=s1[0]; var setGroup=s1[1];
+  var s2=useState([]); var orders=s2[0]; var setOrders=s2[1];
+  var s3=useState(true); var loading=s3[0]; var setLoading=s3[1];
+  var s4=useState(null); var editing=s4[0]; var setEditing=s4[1];
+  var s5=useState(null); var confirm=s5[0]; var setConfirm=s5[1];
+  var s6=useState(''); var toast=s6[0]; var setToast=s6[1];
+  var s7=useState(false); var copied=s7[0]; var setCopied=s7[1];
+  var codeRef=useRef(null);
+
+  function refresh() {
+    loadGroup(gid, function(g) {
+      if (!g){setGroup(null);setLoading(false);return;}
+      setGroup(g);
+      loadOrders(gid, function(os){ setOrders(os); setLoading(false); });
+    });
+  }
+
+  useEffect(function(){refresh();},[gid]);
+  useEffect(function(){
+    var id=setInterval(function(){
+      loadOrders(gid,function(os){setOrders(os);});
+    },15000);
+    return function(){clearInterval(id);};
+  },[gid]);
+  useEffect(function(){
+    if (group && group.adminToken) dbSaveMyGrp({gid:gid,name:group.name,adminToken:token,createdAt:group.createdAt});
+  },[group,gid,token]);
+
+  if (loading) return React.createElement(Spinner,null);
+  if (!group||group.adminToken!==token) return React.createElement(NFView,{nav:nav});
+
+  var expired=isExpired(group.deadline);
+  var totals=calcAll(orders);
+
+  function showToast(msg){setToast(msg);setTimeout(function(){setToast('');},2000);}
+
+  function copyCode(){
+    if (codeRef.current){
+      codeRef.current.select();
+      try{document.execCommand('copy');}catch(e){}
+      setCopied(true);setTimeout(function(){setCopied(false);},2000);
+    }
+  }
+
+  function onDelOrder(oid){
+    setConfirm({msg:'이 주문을 삭제할까요?',onOk:function(){
+      dbDelOrder(gid,oid);dbUnmarkOrd(gid,oid);refresh();setConfirm(null);
+    }});
+  }
+  function onSaveOrder(order){
+    var o=Object.assign({},order,{id:order.id||uid(10),submittedAt:order.submittedAt||Date.now()});
+    dbSaveOrder(gid,o);setEditing(null);refresh();
+  }
+  function onDelGroup(){
+    setConfirm({msg:'그룹과 모든 주문이 삭제됩니다.',onOk:function(){
+      dbDelGroupOrders(gid);dbDelGroup(gid);dbDelMyGrp(gid);nav('home');
+    }});
+  }
+
+  if (editing!==null) {
+    var initOrd=editing==='new'?null:editing;
+    return (
+      <div className="afd">
+        <BackBtn onClick={function(){setEditing(null);}} label="관리 화면으로" />
+        <h1 style={{fontSize:24,fontWeight:800,color:C.green,margin:'14px 0 5px'}}>
+          {editing==='new'?'내 주문 추가':'주문 수정'}
+        </h1>
+        <p style={{fontSize:13,color:C.muted,marginBottom:22}}>호스트 본인 주문은 오피스 수령도 선택 가능해요.</p>
+        <OrderForm allowOffice={true} initial={initOrd}
+          onSubmit={function(o){
+            var isH=editing==='new'?true:o.isHost;
+            onSaveOrder(Object.assign({},o,{isHost:isH}));
+          }}
+          onCancel={function(){setEditing(null);}} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="afd">
+      {confirm&&<CDlg msg={confirm.msg} onOk={confirm.onOk} onCancel={function(){setConfirm(null);}} />}
+      {toast&&<Toast>{toast}</Toast>}
+      <BackBtn onClick={function(){nav('home');}} label="내 그룹 목록" />
+      <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:10,marginTop:14,marginBottom:4}}>
+        <h1 style={{fontSize:24,fontWeight:800,color:C.green,letterSpacing:'-0.02em'}}>{group.name}</h1>
+        <Chip>관리자</Chip>
+      </div>
+      <p style={{fontSize:13,color:C.muted,marginBottom:22}}>
+        {group.organizer.name} · {group.organizer.team} ·{' '}
+        {expired
+          ? <span style={{color:C.red,fontWeight:700}}>마감됨 ({fmtDT(group.deadline)})</span>
+          : <span>마감 {fmtDT(group.deadline)}</span>}
+      </p>
+
+      {/* 코드 */}
+      <div style={{borderRadius:12,border:'1px solid '+C.copperL,backgroundColor:C.surface,padding:18,marginBottom:22}}>
+        <div style={{fontSize:11,fontWeight:700,letterSpacing:'0.2em',textTransform:'uppercase',color:C.copper,marginBottom:10}}>그룹 코드 공유</div>
+        <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:8}}>
+          <div style={{fontSize:30,fontWeight:900,letterSpacing:'0.18em',color:C.green,fontFamily:'monospace'}}>{gid}</div>
+          <div style={{display:'flex',gap:8}}>
+            <input ref={codeRef} readOnly value={gid} onClick={function(e){e.target.select();}}
+              style={{width:100,borderRadius:7,border:'1px solid '+C.line,padding:'7px 10px',fontSize:13,backgroundColor:C.inputBg,color:C.ink,fontFamily:'monospace',letterSpacing:'0.1em',outline:'none'}} />
+            <button onClick={copyCode}
+              style={{borderRadius:7,backgroundColor:copied?C.green:C.copper,color:C.surface,border:'none',padding:'7px 13px',fontSize:12,fontWeight:700,cursor:'pointer'}}>
+              {copied?'복사됨 ✓':'복사'}
+            </button>
+          </div>
+        </div>
+        <p style={{fontSize:12,color:C.muted,lineHeight:1.5}}>
+          지인들에게 이 <strong>8자리 코드</strong>를 알려주세요. 홈 화면 "코드로 참여"에 입력하면 주문할 수 있어요.
+        </p>
+        <button onClick={function(){nav('guest',gid);}}
+          style={{marginTop:8,fontSize:12,color:C.green,background:'none',border:'none',cursor:'pointer',textDecoration:'underline'}}>
+          → 게스트 화면 미리보기
+        </button>
+      </div>
+
+      {/* 현황 */}
+      <div style={{borderRadius:12,backgroundColor:C.green,color:C.surface,padding:22,marginBottom:22}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14}}>
+          <span style={{fontSize:14,fontWeight:700,color:C.copperL}}>현황</span>
+          <span style={{fontSize:12,color:C.copperL,opacity:.8}}>{orders.length}명 · {totals.qty}개 (택배 {totals.dqty})</span>
+        </div>
+        <SRow label="총 맥주값" val={fmt(totals.beer)+'원'} />
+        <SRow label="총 택배비" val={fmt(totals.ship)+'원'} />
+        <div style={{height:1,backgroundColor:C.copperL,opacity:.3,margin:'10px 0'}} />
+        <div style={{display:'flex',alignItems:'baseline',justifyContent:'space-between'}}>
+          <span style={{fontSize:13,fontWeight:600,color:C.copperL}}>합계</span>
+          <span style={{fontSize:26,fontWeight:800}}>{fmt(totals.grand)}<span style={{fontSize:15,marginLeft:3,color:C.copperL}}>원</span></span>
+        </div>
+      </div>
+
+      {/* 주문 목록 */}
+      <div style={{marginBottom:22}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
+          <span style={{fontSize:13,fontWeight:700}}>주문 내역 <span style={{color:C.copper}}>{orders.length}</span></span>
+          <button onClick={refresh} style={{fontSize:12,color:C.muted,background:'none',border:'none',cursor:'pointer'}}>↻ 새로고침</button>
+        </div>
+        {orders.length===0
+          ? <Empty>아직 주문이 없어요.<br />위 코드를 지인들에게 전달해보세요.</Empty>
+          : <div style={{display:'flex',flexDirection:'column',gap:10}}>
+              {orders.map(function(o){
+                return <AOCard key={o.id} order={o}
+                  onEdit={function(){setEditing(o);}}
+                  onDelete={function(){onDelOrder(o.id);}} />;
+              })}
+            </div>}
+        <DashBtn onClick={function(){setEditing('new');}}>+ 내 주문 추가</DashBtn>
+      </div>
+
+      <GBtn onClick={function(){
+        if (orders.length===0){showToast('아직 주문이 없어요.');return;}
+        try{downloadExcel(group,orders);}catch(e){showToast('오류: '+e.message);}
+      }}>엑셀 파일 다운로드</GBtn>
+      <p style={{marginTop:10,textAlign:'center',fontSize:12,color:C.muted}}>
+        다운로드 후 <strong style={{color:C.ink}}>{BIZ_MAIL}</strong> 로 첨부 전송하세요.
+      </p>
+      <div style={{marginTop:28,paddingTop:20,borderTop:'1px solid '+C.soft,textAlign:'center'}}>
+        <button onClick={onDelGroup} style={{fontSize:12,color:C.red,background:'none',border:'none',cursor:'pointer'}}>그룹 삭제</button>
+      </div>
+    </div>
+  );
+}
+
+function AOCard(props) {
+  var order=props.order,onEdit=props.onEdit,onDelete=props.onDelete;
+  var t=calcOrder(order);
+  var items=(order.items||[]).filter(function(it){return getProd(it.productCode)&&(Number(it.qty)||0)>0;});
+  var rec=order.recipient||{};
+  return (
+    <div style={{borderRadius:10,border:'1px solid '+C.line,backgroundColor:C.surface,padding:14}}>
+      <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}>
+        <div>
+          <div style={{display:'flex',alignItems:'center',gap:7}}>
+            <span style={{fontSize:14,fontWeight:700}}>{order.ordererName||'이름 없음'}</span>
+            {order.isHost&&<span style={{fontSize:10,fontWeight:700,backgroundColor:C.copperBg,color:C.copper,borderRadius:4,padding:'2px 6px'}}>호스트</span>}
+          </div>
+          <div style={{fontSize:12,color:C.muted,marginTop:1}}>{order.ordererPhone||'연락처 없음'} · {fmtAgo(order.submittedAt)}</div>
+        </div>
+        <div style={{display:'flex',gap:3}}><IBtn onClick={onEdit}>✎</IBtn><IBtn onClick={onDelete} danger={true}>×</IBtn></div>
+      </div>
+      {items.map(function(it,i){
+        var p=getProd(it.productCode);
+        return <div key={i} style={{display:'flex',justifyContent:'space-between',fontSize:12,color:C.muted,marginBottom:2}}>
+          <span>{p.name} {p.pack} <span style={{color:C.copper}}>x{it.qty}</span> ({it.location})</span>
+          <span>{fmt(p.price*(Number(it.qty)||0))}원</span>
+        </div>;
+      })}
+      {rec.addr&&<div style={{fontSize:12,borderRadius:6,backgroundColor:C.inputBg,padding:'7px 10px',marginTop:6,color:C.muted}}>📦 {rec.name} · {rec.phone} / ({rec.zip}) {rec.addr}</div>}
+      <div style={{display:'flex',justifyContent:'space-between',fontSize:12,borderTop:'1px solid '+C.soft,paddingTop:8,marginTop:8}}>
+        <span style={{color:C.muted}}>맥주 {fmt(t.beer)} · 택배 {fmt(t.ship)}</span>
+        <span style={{fontWeight:700,color:C.green}}>{fmt(t.grand)}원</span>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   게스트
+══════════════════════════════════════════════════════════════ */
+function GuestView(props) {
+  var nav=props.nav, gid=props.gid;
+  var s1=useState(null); var group=s1[0]; var setGroup=s1[1];
+  var s2=useState([]); var myOrders=s2[0]; var setMyOrders=s2[1];
+  var s3=useState(true); var loading=s3[0]; var setLoading=s3[1];
+  var s4=useState('list'); var screen=s4[0]; var setScreen=s4[1];
+  var s5=useState(null); var editing=s5[0]; var setEditing=s5[1];
+  var s6=useState(null); var confirm=s6[0]; var setConfirm=s6[1];
+  var countdown=useCountdown(group?group.deadline:null);
+  var expired=group?isExpired(group.deadline):false;
+
+  function refresh() {
+    loadGroup(gid, function(g) {
+      if (!g){setGroup(null);setLoading(false);return;}
+      setGroup(g);
+      loadOrders(gid, function(all) {
+        var ids=dbMyOrdIds(gid);
+        setMyOrders(all.filter(function(o){return ids[o.id];}));
+        setLoading(false);
+      });
+    });
+  }
+  useEffect(function(){refresh();},[gid]);
+
+  if (loading) return React.createElement(Spinner,null);
+  if (!group)  return React.createElement(NFView,{nav:nav});
+
+  function onSave(order) {
+    if (isExpired(group.deadline)){setScreen('list');return;}
+    var o=Object.assign({},order,{id:order.id||uid(10),submittedAt:Date.now()});
+    dbSaveOrder(gid,o);dbMarkOrd(gid,o.id);
+    setEditing(null);setScreen('done');refresh();
+  }
+  function onRemove(oid) {
+    setConfirm({msg:'이 주문을 취소할까요?',onOk:function(){
+      dbDelOrder(gid,oid);dbUnmarkOrd(gid,oid);refresh();setConfirm(null);
+    }});
+  }
+
+  if ((screen==='form'||editing!==null)&&!expired) {
+    return (
+      <div className="afd">
+        {confirm&&<CDlg msg={confirm.msg} onOk={confirm.onOk} onCancel={function(){setConfirm(null);}} />}
+        <BackBtn onClick={function(){setScreen('list');setEditing(null);}} label="뒤로" />
+        <h1 style={{fontSize:24,fontWeight:800,color:C.green,margin:'14px 0 5px'}}>{editing?'주문 수정':'맥주 주문하기'}</h1>
+        <p style={{fontSize:13,color:C.muted,marginBottom:22}}>{group.name}</p>
+        <OrderForm allowOffice={false} initial={editing}
+          onSubmit={onSave} onCancel={function(){setScreen('list');setEditing(null);}} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="afd">
+      {confirm&&<CDlg msg={confirm.msg} onOk={confirm.onOk} onCancel={function(){setConfirm(null);}} />}
+      <Brand />
+      <div style={{marginBottom:7}}><Chip copper={true}>{group.organizer.name} 님의 주문</Chip></div>
+      <h1 style={{fontSize:24,fontWeight:800,color:C.green,letterSpacing:'-0.02em',marginBottom:14}}>{group.name}</h1>
+
+      {expired?(
+        <div style={{borderRadius:10,backgroundColor:C.redBg,border:'1px solid '+C.red,padding:'14px 16px',marginBottom:22,display:'flex',alignItems:'center',gap:10}}>
+          <span style={{fontSize:20}}>🔒</span>
+          <div>
+            <div style={{fontSize:14,fontWeight:700,color:C.red}}>주문이 마감됐습니다</div>
+            <div style={{fontSize:12,color:C.muted,marginTop:2}}>마감: {fmtDT(group.deadline)}</div>
+          </div>
+        </div>
+      ):(
+        <div style={{borderRadius:10,backgroundColor:C.copperBg,border:'1px solid '+C.copperL,padding:'12px 15px',marginBottom:22,display:'flex',alignItems:'center',justifyContent:'space-between',gap:10}}>
+          <div>
+            <div style={{fontSize:11,fontWeight:700,color:C.copper,marginBottom:2}}>주문 마감까지</div>
+            <div style={{fontSize:18,fontWeight:800,color:C.green}}>{countdown||'--'}</div>
+          </div>
+          <div style={{textAlign:'right'}}>
+            <div style={{fontSize:11,color:C.muted}}>마감 일시</div>
+            <div style={{fontSize:12,fontWeight:600,color:C.ink,marginTop:1}}>{fmtDT(group.deadline)}</div>
+          </div>
+        </div>
+      )}
+
+      {screen==='done'&&!expired&&(
+        <div style={{borderRadius:10,border:'1px solid #2D5F3F',backgroundColor:'#EAF3EC',padding:14,marginBottom:18,display:'flex',gap:10}}>
+          <span style={{color:'#2D5F3F',fontSize:17}}>✓</span>
+          <div style={{fontSize:13,color:'#2D5F3F'}}><strong>주문이 등록됐어요!</strong><br /><span style={{color:C.muted}}>아래에서 확인하거나 추가 주문할 수 있어요.</span></div>
+        </div>
+      )}
+
+      {myOrders.length>0&&(
+        <section style={{marginBottom:20}}>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>내 주문</div>
+          <div style={{display:'flex',flexDirection:'column',gap:8}}>
+            {myOrders.map(function(o){
+              return <GOCard key={o.id} order={o}
+                onEdit={expired?null:function(){setEditing(o);setScreen('form');}}
+                onDelete={expired?null:function(){onRemove(o.id);}} />;
+            })}
+          </div>
+        </section>
+      )}
+
+      {!expired&&<GBtn onClick={function(){setScreen('form');setEditing(null);}}>
+        {myOrders.length>0?'+ 주문 추가하기':'맥주 주문하기'}
+      </GBtn>}
+
+      <div style={{marginTop:22,borderRadius:12,border:'1px solid '+C.line,overflow:'hidden'}}>
+        {PRODUCTS.map(function(p,i){
+          return <div key={p.code} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'11px 15px',backgroundColor:C.surface,borderTop:i?'1px solid '+C.soft:'none'}}>
+            <div>
+              <div style={{fontSize:13,fontWeight:600}}>{p.name}</div>
+              <div style={{fontSize:12,color:C.muted}}>{p.pack} · 유통기한 {p.exp}</div>
+            </div>
+            <div style={{fontSize:14,fontWeight:700,color:C.green}}>{fmt(p.price)}원</div>
+          </div>;
+        })}
+      </div>
+      <p style={{fontSize:12,color:C.muted,marginTop:7,marginBottom:14}}>택배비: 수량당 {fmt(SHIP_FEE)}원</p>
+
+      <div style={{borderRadius:12,border:'1px solid '+C.line,backgroundColor:C.surface,padding:18}}>
+        <div style={{fontSize:11,fontWeight:700,letterSpacing:'0.2em',textTransform:'uppercase',color:C.copper,marginBottom:10}}>입금 안내</div>
+        <BankRow label="맥주값" acc="신한은행 100-032-200824" holder="(주)엠케이펍" />
+        <div style={{height:8}} />
+        <BankRow label="택배비" acc="카카오뱅크 3333-223-995689" holder="박종성" />
+      </div>
+    </div>
+  );
+}
+
+function GOCard(props) {
+  var order=props.order,onEdit=props.onEdit,onDelete=props.onDelete;
+  var t=calcOrder(order);
+  var items=(order.items||[]).filter(function(it){return getProd(it.productCode)&&(Number(it.qty)||0)>0;});
+  return (
+    <div style={{borderRadius:10,border:'1px solid '+C.copperL,backgroundColor:C.surface,padding:13}}>
+      <div style={{display:'flex',justifyContent:'space-between',marginBottom:7}}>
+        <div style={{fontSize:12,color:C.muted}}>{fmtAgo(order.submittedAt)} 등록</div>
+        {(onEdit||onDelete)&&<div style={{display:'flex',gap:3}}>
+          {onEdit&&<IBtn onClick={onEdit}>✎</IBtn>}
+          {onDelete&&<IBtn onClick={onDelete} danger={true}>×</IBtn>}
+        </div>}
+      </div>
+      {items.map(function(it,i){
+        var p=getProd(it.productCode);
+        return <div key={i} style={{display:'flex',justifyContent:'space-between',fontSize:13,marginBottom:3}}>
+          <span>{p.name} {p.pack} <span style={{color:C.copper}}>x{it.qty}</span></span>
+          <span style={{fontSize:12,color:C.muted}}>{fmt(p.price*(Number(it.qty)||0))}원</span>
+        </div>;
+      })}
+      <div style={{display:'flex',justifyContent:'space-between',fontSize:12,borderTop:'1px solid '+C.soft,paddingTop:7,marginTop:7}}>
+        <span style={{color:C.muted}}>맥주 {fmt(t.beer)} · 택배 {fmt(t.ship)}</span>
+        <span style={{fontWeight:700,color:C.green}}>{fmt(t.grand)}원</span>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   주문 폼
+══════════════════════════════════════════════════════════════ */
+function mkItem(){ return {id:uid(5),location:'택배',productCode:'',qty:1,note:''}; }
+
+function OrderForm(props) {
+  var allowOffice=props.allowOffice, initial=props.initial, onSubmit=props.onSubmit, onCancel=props.onCancel;
+  var s1=useState(initial?initial.ordererName||'':''); var name=s1[0]; var setName=s1[1];
+  var s2=useState(initial?initial.ordererPhone||'':''); var phone=s2[0]; var setPhone=s2[1];
+  var s3=useState(function(){
+    if (initial&&initial.items&&initial.items.length) return initial.items.map(function(it){return Object.assign({id:uid(5),note:''},it);});
+    return [mkItem()];
+  }); var items=s3[0]; var setItems=s3[1];
+  var initRec=initial&&initial.recipient?initial.recipient:{name:'',phone:'',zip:'',addr:''};
+  var initSame=!initial||!initial.recipient||!initial.recipient.name||initial.recipient.name===(initial.ordererName||'');
+  var s4=useState(initSame); var same=s4[0]; var setSame=s4[1];
+  var s5=useState(initRec); var recip=s5[0]; var setRecip=s5[1];
+  var s6=useState(''); var err=s6[0]; var setErr=s6[1];
+
+  var enriched=useMemo(function(){
+    return items.map(function(it){
+      var p=getProd(it.productCode),q=Number(it.qty)||0;
+      return Object.assign({},it,{p:p,beer:p?p.price*q:0,ship:(it.location==='택배'&&p)?q*SHIP_FEE:0});
+    });
+  },[items]);
+
+  /* 택배 선택된 품목이 있을 때만 배송지 섹션 표시 */
+  var hasShip=false;
+  for (var hi=0;hi<items.length;hi++){
+    if (items[hi].location==='택배'&&items[hi].productCode){ hasShip=true; break; }
+  }
+
+  var totals=useMemo(function(){
+    var b=0,s=0;
+    for (var i=0;i<enriched.length;i++){if(enriched[i].p){b+=enriched[i].beer;s+=enriched[i].ship;}}
+    return {beer:b,ship:s};
+  },[enriched]);
+
+  function upd(id,patch){ setItems(function(a){return a.map(function(it){return it.id===id?Object.assign({},it,patch):it;});}); }
+  function remIt(id){ setItems(function(a){return a.length===1?[mkItem()]:a.filter(function(it){return it.id!==id;});}); }
+
+  function submit(){
+    setErr('');
+    if (!name.trim()){setErr('이름을 입력해주세요.');return;}
+    var valid=items.filter(function(it){return it.productCode&&it.location;});
+    if (!valid.length){setErr('품목을 1개 이상 선택해주세요.');return;}
+    var rec=null;
+    if (hasShip){
+      rec=same?{name:name.trim(),phone:phone.trim(),zip:recip.zip,addr:recip.addr}:Object.assign({},recip);
+      if (!rec.name.trim()){setErr('받는 사람 성함을 입력해주세요.');return;}
+      if (!rec.phone.trim()){setErr('받는 사람 연락처를 입력해주세요.');return;}
+      if (!/^\d{5}$/.test(rec.zip||'')){setErr('우편번호 5자리를 입력해주세요.');return;}
+      if (!rec.addr.trim()){setErr('배송 주소를 입력해주세요.');return;}
+    }
+    var id=initial?initial.id:undefined, isHost=initial?initial.isHost:undefined;
+    onSubmit({id:id,isHost:isHost,ordererName:name.trim(),ordererPhone:phone.trim(),
+      items:valid.map(function(it){return {id:it.id,location:it.location,productCode:it.productCode,qty:Number(it.qty)||1,note:it.note||''};}),
+      recipient:rec});
+  }
+
+  return (
+    <div>
+      <Card title="주문자 정보" no="01">
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14}}>
+          <Field label="이름" required><Inp value={name} onChange={function(v){setName(v);setErr('');}} /></Field>
+          <Field label="연락처" hint="호스트가 연락할 때"><Inp value={phone} onChange={setPhone} type="tel" /></Field>
+        </div>
+      </Card>
+
+      <Card title="주문 품목" no="02">
+        <div style={{display:'flex',flexDirection:'column',gap:14}}>
+          {enriched.map(function(it,idx){
+            return (
+              <div key={it.id} style={{borderRadius:8,border:'1px solid '+(it.p?C.copperL:C.soft),backgroundColor:C.inputBg,padding:13}}>
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
+                  <span style={{fontSize:12,fontWeight:600,color:C.muted}}>
+                    {'품목 '+(idx+1)}{it.p&&<span style={{color:C.green}}>{' · '+fmt(it.beer+it.ship)+'원'}</span>}
+                  </span>
+                  {items.length>1&&<IBtn onClick={function(){remIt(it.id);}} danger={true}>x</IBtn>}
+                </div>
+                <div style={{display:'grid',gridTemplateColumns:'4fr 2fr 2fr',gap:10}}>
+                  <Field label="품목" required>
+                    <Sel value={it.productCode} onChange={function(v){upd(it.id,{productCode:v});setErr('');}} ph="선택"
+                      options={PRODUCTS.map(function(p){return {value:p.code,label:p.name+' '+p.pack+' · '+fmt(p.price)+'원'};})} />
+                  </Field>
+                  <Field label="수령지" required>
+                    {allowOffice
+                      ? <Sel value={it.location} onChange={function(v){upd(it.id,{location:v});}} ph="선택" options={LOCS} />
+                      : <div style={{borderRadius:8,border:'1px solid '+C.copperL,backgroundColor:C.copperBg,padding:'10px 12px',fontSize:13,fontWeight:700,color:C.green}}>택배</div>}
+                  </Field>
+                  <Field label="수량" required>
+                    <Stepper value={Number(it.qty)||1} onChange={function(v){upd(it.id,{qty:v});}} />
+                  </Field>
+                </div>
+                {it.p&&<div style={{marginTop:9,fontSize:12,borderRadius:6,backgroundColor:C.surface,border:'1px solid '+C.soft,padding:'7px 11px',color:C.muted}}>
+                  맥주값 <strong style={{color:C.ink}}>{fmt(it.beer)}원</strong> · 택배비 <strong style={{color:C.ink}}>{fmt(it.ship)}원</strong>
+                </div>}
+              </div>
+            );
+          })}
+        </div>
+        <DashBtn onClick={function(){setItems(function(a){return a.concat([mkItem()]);});}}>+ 품목 추가</DashBtn>
+      </Card>
+
+      {/* 배송 정보: 택배 품목이 1개라도 있을 때만 표시 */}
+      {hasShip&&(
+        <Card title="배송 정보 (택배)" no="03">
+          <label style={{display:'flex',alignItems:'center',gap:8,marginBottom:14,cursor:'pointer',fontSize:13}}>
+            <input type="checkbox" checked={same} onChange={function(e){setSame(e.target.checked);setErr('');}}
+              style={{accentColor:C.green,width:15,height:15}} />
+            받는 사람이 주문자 본인과 같아요
+          </label>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:13}}>
+            {!same&&(
+              <React.Fragment>
+                <Field label="받는 사람 성함" required>
+                  <Inp value={recip.name} onChange={function(v){setRecip(Object.assign({},recip,{name:v}));setErr('');}} />
+                </Field>
+                <Field label="받는 사람 연락처" required>
+                  <Inp value={recip.phone} onChange={function(v){setRecip(Object.assign({},recip,{phone:v}));setErr('');}} type="tel" />
+                </Field>
+              </React.Fragment>
+            )}
+            <Field label="우편번호" required>
+              <Inp value={recip.zip} onChange={function(v){setRecip(Object.assign({},recip,{zip:v.replace(/\D/g,'').slice(0,5)}));setErr('');}} inputMode="numeric" maxLength={5} />
+            </Field>
+            <div style={{gridColumn:same?'1':'1 / span 2'}}>
+              <Field label="주소" required>
+                <Inp value={recip.addr} onChange={function(v){setRecip(Object.assign({},recip,{addr:v}));setErr('');}} />
+              </Field>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      <div style={{borderRadius:12,backgroundColor:C.green,color:C.surface,padding:18,marginBottom:14}}>
+        <div style={{display:'flex',alignItems:'baseline',justifyContent:'space-between'}}>
+          <span style={{fontSize:13,fontWeight:600,color:C.copperL}}>합계</span>
+          <span style={{fontSize:24,fontWeight:800}}>{fmt(totals.beer+totals.ship)}<span style={{fontSize:14,marginLeft:3,color:C.copperL}}>원</span></span>
+        </div>
+        <div style={{fontSize:12,marginTop:3,color:C.copperL,opacity:.8}}>맥주 {fmt(totals.beer)}원 · 택배 {fmt(totals.ship)}원</div>
+      </div>
+      {err&&<ErrBox>{err}</ErrBox>}
+      <GBtn onClick={submit}>{initial?'수정 완료':'주문 등록'}</GBtn>
+      <button onClick={onCancel} style={{display:'block',width:'100%',marginTop:8,padding:'10px 0',fontSize:13,color:C.muted,background:'none',border:'none',cursor:'pointer'}}>취소</button>
+    </div>
+  );
+}
+
+/* ── 공통 컴포넌트 ────────────────────────────────────────────── */
+function Brand(){
+  return <div style={{display:'flex',alignItems:'center',gap:9,marginBottom:18}}>
+    <div style={{width:30,height:4,borderRadius:2,backgroundColor:C.copper}} />
+    <span style={{fontSize:10,fontWeight:700,letterSpacing:'0.25em',textTransform:'uppercase',color:C.copper}}>Internal Sales · Heineken Korea</span>
+  </div>;
+}
+function BackBtn(p){ return <button onClick={p.onClick} style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:13,fontWeight:500,color:C.muted,background:'none',border:'none',cursor:'pointer',padding:0}}>{'← '+p.label}</button>; }
+function Chip(p){ var bg=p.copper?C.copperBg:C.green,fg=p.copper?C.copper:C.surface; return <span style={{display:'inline-block',fontSize:11,fontWeight:700,borderRadius:999,padding:'3px 9px',backgroundColor:bg,color:fg}}>{p.children}</span>; }
+function Card(p){ return <section style={{marginBottom:20}}><div style={{display:'flex',alignItems:'baseline',gap:9,marginBottom:9}}><span style={{fontSize:10,fontFamily:'monospace',fontWeight:700,color:C.copper,letterSpacing:'0.1em'}}>{p.no}</span><h2 style={{fontSize:14,fontWeight:700,color:C.ink,margin:0}}>{p.title}</h2></div><div style={{borderRadius:12,border:'1px solid '+C.line,backgroundColor:C.surface,padding:18}}>{p.children}</div></section>; }
+function Field(p){ return <div><div style={{display:'flex',alignItems:'center',gap:4,marginBottom:5}}><span style={{fontSize:12,fontWeight:700,color:C.ink}}>{p.label}</span>{p.required&&<span style={{fontSize:11,color:C.copper}}>*</span>}{p.hint&&<span style={{fontSize:11,color:C.muted,fontWeight:400}}>{'· '+p.hint}</span>}</div>{p.children}</div>; }
+function Inp(p){
+  var fs=useState(false); var f=fs[0]; var sf=fs[1];
+  return <input type={p.type||'text'} value={p.value} onChange={function(e){p.onChange(e.target.value);}} maxLength={p.maxLength} inputMode={p.inputMode}
+    style={{width:'100%',borderRadius:8,border:'1px solid '+(f?C.green:C.line),padding:'10px 12px',fontSize:13,backgroundColor:f?C.surface:C.inputBg,color:C.ink,outline:'none',fontFamily:FONT}}
+    onFocus={function(){sf(true);}} onBlur={function(){sf(false);}} />;
+}
+function Sel(p){
+  var fs=useState(false); var f=fs[0]; var sf=fs[1];
+  return <select value={p.value} onChange={function(e){p.onChange(e.target.value);}}
+    style={{width:'100%',appearance:'none',borderRadius:8,border:'1px solid '+(f?C.green:C.line),padding:'10px 30px 10px 12px',fontSize:13,backgroundColor:p.value?C.surface:C.inputBg,color:p.value?C.ink:C.muted,outline:'none',fontFamily:FONT,backgroundImage:"url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='7' viewBox='0 0 10 7'><path fill='none' stroke='%236F6A5E' stroke-width='1.5' d='M1 1l4 4 4-4'/></svg>\")",backgroundRepeat:'no-repeat',backgroundPosition:'right 10px center'}}
+    onFocus={function(){sf(true);}} onBlur={function(){sf(false);}}>
+    <option value="">{p.ph}</option>
+    {p.options.map(function(o){ var v=typeof o==='string'?o:o.value,l=typeof o==='string'?o:o.label; return <option key={v} value={v}>{l}</option>; })}
+  </select>;
+}
+function Stepper(p){
+  var min=p.min||1,max=p.max||99,value=p.value,onChange=p.onChange;
+  return <div style={{display:'flex',borderRadius:8,border:'1px solid '+C.line,backgroundColor:C.inputBg,overflow:'hidden'}}>
+    <button type="button" onClick={function(){onChange(Math.max(min,(value||0)-1));}} style={{width:34,height:38,display:'flex',alignItems:'center',justifyContent:'center',background:'none',border:'none',cursor:'pointer',fontSize:15,color:C.muted}}>-</button>
+    <input type="number" value={value} onChange={function(e){onChange(Math.max(min,Math.min(max,parseInt(e.target.value)||min)));}} style={{width:32,textAlign:'center',fontSize:13,background:'transparent',outline:'none',border:'none',borderLeft:'1px solid '+C.line,borderRight:'1px solid '+C.line,color:C.ink,height:38,fontFamily:FONT}} />
+    <button type="button" onClick={function(){onChange(Math.min(max,(value||0)+1));}} style={{width:34,height:38,display:'flex',alignItems:'center',justifyContent:'center',background:'none',border:'none',cursor:'pointer',fontSize:15,color:C.muted}}>+</button>
+  </div>;
+}
+function IBtn(p){
+  var hs=useState(false); var h=hs[0]; var sh=hs[1];
+  return <button type="button" onClick={p.onClick} style={{width:27,height:27,display:'inline-flex',alignItems:'center',justifyContent:'center',borderRadius:6,border:'none',cursor:'pointer',fontSize:13,color:p.danger?C.red:C.muted,backgroundColor:h?(p.danger?C.redBg:'#EBE3D0'):'transparent'}} onMouseEnter={function(){sh(true);}} onMouseLeave={function(){sh(false);}}>{p.children}</button>;
+}
+function GBtn(p){
+  var hs=useState(false); var h=hs[0]; var sh=hs[1];
+  return <button type="button" onClick={p.onClick} disabled={p.disabled} style={{display:'block',width:'100%',borderRadius:10,border:'none',padding:'14px 0',fontSize:14,fontWeight:700,cursor:p.disabled?'not-allowed':'pointer',backgroundColor:p.disabled?C.line:(h?C.greenD:C.green),color:p.disabled?C.muted:C.surface,letterSpacing:'0.03em'}} onMouseEnter={function(){sh(true);}} onMouseLeave={function(){sh(false);}}>{p.children}</button>;
+}
+function GCard(p){
+  var hs=useState(false); var h=hs[0]; var sh=hs[1];
+  return <button onClick={p.onClick} style={{textAlign:'left',borderRadius:12,border:'2px solid '+C.green,backgroundColor:h?C.greenD:C.green,color:C.surface,padding:18,cursor:'pointer'}} onMouseEnter={function(){sh(true);}} onMouseLeave={function(){sh(false);}}>{p.children}</button>;
+}
+function DashBtn(p){ return <button onClick={p.onClick} style={{marginTop:10,width:'100%',borderRadius:8,border:'2px dashed '+C.line,backgroundColor:'transparent',padding:'10px 0',fontSize:13,fontWeight:700,color:C.green,cursor:'pointer'}}>{p.children}</button>; }
+function SRow(p){ return <div style={{display:'flex',justifyContent:'space-between',padding:'3px 0'}}><span style={{fontSize:13,color:C.copperL,opacity:.85}}>{p.label}</span><span style={{fontSize:14,fontWeight:600}}>{p.val}</span></div>; }
+function BankRow(p){ return <div style={{display:'flex',gap:10}}><span style={{fontSize:11,fontWeight:700,width:42,flexShrink:0,color:C.green,paddingTop:2}}>{p.label}</span><div><div style={{fontSize:13,fontFamily:'monospace',color:C.ink}}>{p.acc}</div><div style={{fontSize:11,color:C.muted}}>예금주: {p.holder}</div></div></div>; }
+function ErrBox(p){ return <div style={{borderRadius:8,backgroundColor:C.redBg,border:'1px solid '+C.red,padding:'10px 13px',fontSize:12,color:C.red,marginBottom:12}}>{p.children}</div>; }
+function Empty(p){ return <div style={{borderRadius:10,border:'1px dashed '+C.line,padding:28,textAlign:'center',fontSize:13,color:C.muted,lineHeight:1.7}}>{p.children}</div>; }
+function Toast(p){ return <div style={{position:'fixed',top:20,left:'50%',transform:'translateX(-50%)',backgroundColor:C.green,color:C.surface,borderRadius:8,padding:'10px 20px',fontSize:13,fontWeight:600,zIndex:999,boxShadow:'0 4px 12px rgba(0,0,0,.2)'}}>{p.children}</div>; }
+function Spinner(){ return <div style={{paddingTop:80,textAlign:'center',fontSize:13,color:C.muted}}>불러오는 중...</div>; }
+function CDlg(p){
+  return <div style={{position:'fixed',inset:0,backgroundColor:'rgba(0,0,0,.4)',zIndex:998,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
+    <div style={{backgroundColor:C.surface,borderRadius:14,padding:24,maxWidth:320,width:'100%'}}>
+      <p style={{fontSize:14,color:C.ink,marginBottom:20,lineHeight:1.5}}>{p.msg}</p>
+      <div style={{display:'flex',gap:10}}>
+        <button onClick={p.onCancel} style={{flex:1,borderRadius:8,border:'1px solid '+C.line,backgroundColor:C.surface,padding:'10px 0',fontSize:13,cursor:'pointer',color:C.muted}}>취소</button>
+        <button onClick={p.onOk} style={{flex:1,borderRadius:8,border:'none',backgroundColor:C.red,color:C.surface,padding:'10px 0',fontSize:13,fontWeight:700,cursor:'pointer'}}>확인</button>
+      </div>
+    </div>
+  </div>;
+}
+function NFView(p){ return <div style={{paddingTop:60,textAlign:'center'}} className="afd">
+  <div style={{fontSize:40,marginBottom:10}}>🍺</div>
+  <h1 style={{fontSize:20,fontWeight:700,marginBottom:8}}>그룹을 찾을 수 없어요</h1>
+  <p style={{fontSize:13,color:C.muted,marginBottom:22}}>코드가 잘못됐거나 삭제된 그룹일 수 있어요.</p>
+  <button onClick={function(){p.nav('home');}} style={{borderRadius:8,backgroundColor:C.green,color:C.surface,border:'none',padding:'10px 20px',fontSize:13,fontWeight:700,cursor:'pointer'}}>홈으로</button>
+</div>; }
+
+// 앱 마운트
+document.getElementById('loading').style.display = 'none';
+document.getElementById('root').style.display = 'block';
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(React.createElement(App, null));
+</script>
+</body>
+</html>
