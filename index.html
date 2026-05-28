@@ -44,7 +44,7 @@ var PRODUCTS = [
 var LOCS  = ['택배','Seoul Office','Busan Office','Daejeon Office','Gwangju Office','Daegu Office','Jeju Office'];
 var TEAMS = ['GM','HR','MKT','FIN&IT','On Seoul','Off Seoul','DDT','NST','Busan','Daegu','Daejeon','Supply Chain','Gwangju','Jeju','DT','TM&O'];
 var SHIP_FEE = 4500;
-var BIZ_MAIL = 'younghan.chae@heineken.com';
+var BIZ_MAIL = '';
 
 function getProd(code) { for (var i=0;i<PRODUCTS.length;i++) if (PRODUCTS[i].code===code) return PRODUCTS[i]; return null; }
 function fullName(p) { return p.name+' '+p.pack+' ('+p.sku+')'; }
@@ -232,7 +232,6 @@ function downloadExcel(group, orders) {
   for (var i=0;i<rows.length;i++){ tb+=rows[i][6];ts+=rows[i][7];tq+=rows[i][5];if(rows[i][3]==='택배')td+=rows[i][5]; }
 
   var notes=[
-    ['주문취합 이메일 : 채영한',BIZ_MAIL,'',''],
     ['주문 마감 : '+fmtDT(group.deadline),'','',''],
     ['입금 마감 : '+fmtDT(group.deadline),'','',''],['','','',''],
     ['맥주값 입금계좌 : 신한은행 100-032-200824 (주)엠케이펍','','','입금자명은 반드시 신청직원명으로'],
@@ -645,9 +644,7 @@ function AdminView(props) {
         if (orders.length===0){showToast('아직 주문이 없어요.');return;}
         try{downloadExcel(group,orders);}catch(e){showToast('오류: '+e.message);}
       }}>엑셀 파일 다운로드</GBtn>
-      <p style={{marginTop:10,textAlign:'center',fontSize:12,color:C.muted}}>
-        다운로드 후 <strong style={{color:C.ink}}>{BIZ_MAIL}</strong> 로 첨부 전송하세요.
-      </p>
+      <p style={{marginTop:10,textAlign:'center',fontSize:12,color:C.muted}}>엑셀 파일을 다운로드한 뒤 담당자에게 전송하세요.</p>
       <div style={{marginTop:28,paddingTop:20,borderTop:'1px solid '+C.soft,textAlign:'center'}}>
         <button onClick={onDelGroup} style={{fontSize:12,color:C.red,background:'none',border:'none',cursor:'pointer'}}>그룹 삭제</button>
       </div>
@@ -680,6 +677,7 @@ function AOCard(props) {
         </div>;
       })}
       {rec.addr&&<div style={{fontSize:12,borderRadius:6,backgroundColor:C.inputBg,padding:'7px 10px',marginTop:6,color:C.muted}}>📦 {rec.name} · {rec.phone} / ({rec.zip}) {rec.addr}</div>}
+      {order.deliveryNote&&<div style={{fontSize:12,borderRadius:6,backgroundColor:'#FFF8EC',border:'1px solid #E8D080',padding:'7px 10px',marginTop:4,color:'#7A6020'}}>💬 {order.deliveryNote}</div>}
       <div style={{display:'flex',justifyContent:'space-between',fontSize:12,borderTop:'1px solid '+C.soft,paddingTop:8,marginTop:8}}>
         <span style={{color:C.muted}}>맥주 {fmt(t.beer)} · 택배 {fmt(t.ship)}</span>
         <span style={{fontWeight:700,color:C.green}}>{fmt(t.grand)}원</span>
@@ -867,6 +865,9 @@ function OrderForm(props) {
   var s4=useState(initSame); var same=s4[0]; var setSame=s4[1];
   var s5=useState(initRec); var recip=s5[0]; var setRecip=s5[1];
   var s6=useState(''); var err=s6[0]; var setErr=s6[1];
+  var s7=useState(initial?initial.deliveryNote||'':''); var deliveryNote=s7[0]; var setDeliveryNote=s7[1];
+  var s8=useState(false); var ageCheck=s8[0]; var setAgeCheck=s8[1];
+  var s9=useState(false); var refundCheck=s9[0]; var setRefundCheck=s9[1];
 
   var enriched=useMemo(function(){
     return items.map(function(it){
@@ -904,8 +905,10 @@ function OrderForm(props) {
       if (!rec.addr.trim()){setErr('주소 검색 버튼으로 주소를 입력해주세요.');return;}
       rec.addr = rec.addr.trim() + (rec.addrDetail ? ' ' + rec.addrDetail.trim() : '');
     }
+    if (!ageCheck){setErr('19세 이상 확인이 필요합니다.');return;}
+    if (!refundCheck){setErr('교환·환불 불가 안내 확인이 필요합니다.');return;}
     var id=initial?initial.id:undefined, isHost=initial?initial.isHost:undefined;
-    onSubmit({id:id,isHost:isHost,ordererName:name.trim(),ordererPhone:phone.trim(),
+    onSubmit({id:id,isHost:isHost,ordererName:name.trim(),ordererPhone:phone.trim(),deliveryNote:deliveryNote.trim(),
       items:valid.map(function(it){return {id:it.id,location:it.location,productCode:it.productCode,qty:Number(it.qty)||1,note:it.note||''};}),
       recipient:rec});
   }
@@ -1005,6 +1008,35 @@ function OrderForm(props) {
           </div>
         </Card>
       )}
+
+      <Card title="배송 특이사항" no="04">
+        <Field label="특이사항" hint="선택사항">
+          <textarea value={deliveryNote} onChange={function(e){setDeliveryNote(e.target.value);}}
+            placeholder="예) 부재 시 경비실 보관 / 문 앞 놔주세요 / 벨 누르지 마세요"
+            rows={3}
+            style={{width:'100%',borderRadius:8,border:'1px solid '+C.line,padding:'10px 12px',fontSize:13,backgroundColor:C.inputBg,color:C.ink,outline:'none',fontFamily:FONT,resize:'vertical',lineHeight:1.5}} />
+        </Field>
+      </Card>
+
+      <div style={{borderRadius:12,border:'1px solid '+C.line,backgroundColor:C.surface,padding:18,marginBottom:14}}>
+        <div style={{fontSize:11,fontWeight:700,letterSpacing:'0.15em',textTransform:'uppercase',color:C.copper,marginBottom:12}}>주문 전 확인사항</div>
+        <label style={{display:'flex',alignItems:'flex-start',gap:10,cursor:'pointer',marginBottom:12,paddingBottom:12,borderBottom:'1px solid '+C.soft}}>
+          <input type="checkbox" checked={ageCheck} onChange={function(e){setAgeCheck(e.target.checked);setErr('');}}
+            style={{accentColor:C.green,width:18,height:18,marginTop:1,flexShrink:0}} />
+          <span style={{fontSize:13,color:C.ink,lineHeight:1.5}}>
+            <strong>만 19세 이상입니다.</strong><br />
+            <span style={{fontSize:12,color:C.muted}}>주류 구매는 법적으로 성인만 가능합니다.</span>
+          </span>
+        </label>
+        <label style={{display:'flex',alignItems:'flex-start',gap:10,cursor:'pointer'}}>
+          <input type="checkbox" checked={refundCheck} onChange={function(e){setRefundCheck(e.target.checked);setErr('');}}
+            style={{accentColor:C.green,width:18,height:18,marginTop:1,flexShrink:0}} />
+          <span style={{fontSize:13,color:C.ink,lineHeight:1.5}}>
+            <strong>제품 파손 시 교환·환불이 불가한 점 확인하였습니다.</strong><br />
+            <span style={{fontSize:12,color:C.muted}}>사내판매 특성상 파손 제품 교환·환불은 불가합니다.</span>
+          </span>
+        </label>
+      </div>
 
       <div style={{borderRadius:12,backgroundColor:C.green,color:C.surface,padding:18,marginBottom:14}}>
         <div style={{display:'flex',alignItems:'baseline',justifyContent:'space-between'}}>
