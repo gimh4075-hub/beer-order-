@@ -106,16 +106,44 @@ function useCountdown(iso) {
   return m+'분 '+ss+'초';
 }
 
-/* ── 인메모리 DB ───────────────────────────────────────────────── */
+/* ── Supabase 연동 ────────────────────────────────────────────── */
+var SUPA_URL = 'https://zocafymmfyjoyknkrbws.supabase.co/rest/v1';
+var SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpvY2FmeW1tZnlqb3lrbmtyYndzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk5Mzg1NzQsImV4cCI6MjA5NTUxNDU3NH0.lvwYu0GQT5v3z1nimV6-EdX7oxz7mvcSrrUlSLLs9vU';
+
+function supaH(extra) {
+  var h = { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY, 'Content-Type': 'application/json' };
+  if (extra) { for (var k in extra) h[k] = extra[k]; }
+  return h;
+}
+
+function supaGet(path, cb) {
+  fetch(SUPA_URL + path, { headers: supaH() })
+    .then(function(r) { return r.json(); })
+    .then(function(d) { cb(d); })
+    .catch(function() { cb(null); });
+}
+function supaPost(path, body, cb) {
+  fetch(SUPA_URL + path, {
+    method: 'POST',
+    headers: supaH({ 'Prefer': 'resolution=merge-duplicates,return=minimal' }),
+    body: JSON.stringify(body)
+  }).then(function(r) { if (cb) cb(r.ok); }).catch(function() { if (cb) cb(false); });
+}
+function supaDelete(path, cb) {
+  fetch(SUPA_URL + path, { method: 'DELETE', headers: supaH() })
+    .then(function() { if (cb) cb(); }).catch(function() { if (cb) cb(); });
+}
+
+/* ── 인메모리 캐시 (빠른 응답용) ──────────────────────────────── */
 var DB = { groups:{}, orders:{}, myGrps:{}, myOrds:{} };
 
-function dbSaveGroup(g)  { DB.groups[g.id]=g; trySaveWS('g:'+g.id, g); }
+function dbSaveGroup(g)  { DB.groups[g.id]=g; supaPost('/groups', {id:g.id, data:g}); }
 function dbGetGroup(gid) { return DB.groups[gid]||null; }
-function dbDelGroup(gid) { delete DB.groups[gid]; delete DB.orders[gid]; tryDelWS('g:'+gid); }
+function dbDelGroup(gid) { delete DB.groups[gid]; delete DB.orders[gid]; supaDelete('/groups?id=eq.'+gid); }
 
-function dbSaveOrder(gid,o) { if (!DB.orders[gid]) DB.orders[gid]={}; DB.orders[gid][o.id]=o; trySaveWS('o:'+gid+':'+o.id, o); }
+function dbSaveOrder(gid,o) { if (!DB.orders[gid]) DB.orders[gid]={}; DB.orders[gid][o.id]=o; supaPost('/orders', {id:o.id, group_id:gid, data:o}); }
 function dbGetOrders(gid)   { return Object.values(DB.orders[gid]||{}).sort(function(a,b){return (b.submittedAt||0)-(a.submittedAt||0);}); }
-function dbDelOrder(gid,oid){ if (DB.orders[gid]) delete DB.orders[gid][oid]; tryDelWS('o:'+gid+':'+oid); }
+function dbDelOrder(gid,oid){ if (DB.orders[gid]) delete DB.orders[gid][oid]; supaDelete('/orders?id=eq.'+oid); }
 function dbDelGroupOrders(gid){ delete DB.orders[gid]; }
 
 function dbSaveMyGrp(info) { DB.myGrps[info.gid]=info; }
@@ -141,39 +169,26 @@ function tryGetWS(key, cb) {
   } catch(e){ cb(null); }
 }
 
-/* 그룹 로드: 메모리 먼저, 없으면 WS */
+/* 그룹 로드: 메모리 먼저, 없으면 Supabase */
 function loadGroup(gid, cb) {
   var g = dbGetGroup(gid);
   if (g) { cb(g); return; }
-  tryGetWS('g:'+gid, function(val) {
-    if (val) { DB.groups[val.id]=val; }
-    cb(val);
+  supaGet('/groups?id=eq.'+gid+'&select=data&limit=1', function(rows) {
+    var found = (rows && rows.length > 0) ? rows[0].data : null;
+    if (found) DB.groups[found.id] = found;
+    cb(found);
   });
 }
 
-/* 주문 로드: 메모리 먼저, 없으면 WS list */
+/* 주문 로드: 항상 Supabase에서 최신 데이터 */
 function loadOrders(gid, cb) {
-  var fromMem = dbGetOrders(gid);
-  if (fromMem.length > 0) { cb(fromMem); return; }
-  try {
-    if (!window.storage) { cb(fromMem); return; }
-    window.storage.list('bop:o:'+gid+':', true).then(function(r) {
-      var keys = (r && r.keys) ? r.keys : [];
-      if (!keys.length) { cb(fromMem); return; }
-      var results = [], done = 0;
-      keys.forEach(function(k) {
-        var shortKey = k.replace('bop:','');
-        tryGetWS(shortKey, function(val) {
-          if (val) results.push(val);
-          done++;
-          if (done===keys.length) {
-            results.forEach(function(o){ if (!DB.orders[gid]) DB.orders[gid]={}; DB.orders[gid][o.id]=o; });
-            cb(results.sort(function(a,b){return (b.submittedAt||0)-(a.submittedAt||0);}));
-          }
-        });
-      });
-    }).catch(function(){ cb(fromMem); });
-  } catch(e){ cb(fromMem); }
+  supaGet('/orders?group_id=eq.'+gid+'&select=data&order=created_at.desc', function(rows) {
+    if (!rows) { cb(dbGetOrders(gid)); return; }
+    var orders = rows.map(function(r){return r.data;}).filter(Boolean);
+    if (!DB.orders[gid]) DB.orders[gid]={};
+    orders.forEach(function(o){ DB.orders[gid][o.id]=o; });
+    cb(orders);
+  });
 }
 
 /* ── 라우팅 ────────────────────────────────────────────────────── */
@@ -336,10 +351,21 @@ function HomeView(props) {
   function refreshGroups(){ setGroups(dbGetMyGrps()); }
 
   function join() {
-    var c=code.trim().toUpperCase();
-    if (!c){ setErr('코드를 입력해주세요.'); return; }
+    var raw = code.trim();
+    if (!raw){ setErr('코드 또는 링크를 입력해주세요.'); return; }
+    // URL에서 그룹 ID 추출 또는 코드 직접 사용
+    var c = '';
+    var hashMatch = raw.match(/#g=([A-Z0-9]+)/i);
+    var queryMatch = raw.match(/[?&]g=([A-Z0-9]+)/i);
+    if (hashMatch) c = hashMatch[1].toUpperCase();
+    else if (queryMatch) c = queryMatch[1].toUpperCase();
+    else c = raw.replace(/[^A-Z0-9]/gi,'').toUpperCase();
+    if (!c){ setErr('올바른 코드 또는 링크를 입력해주세요.'); return; }
     setJoining(true); setErr('');
+    var done=false;
+    var timer=setTimeout(function(){ if(!done){ done=true; setJoining(false); setErr('그룹을 찾을 수 없어요. 코드를 다시 확인해주세요.'); } }, 5000);
     loadGroup(c, function(g) {
+      if(done) return; done=true; clearTimeout(timer);
       setJoining(false);
       if (!g){ setErr('그룹을 찾을 수 없어요. 코드를 다시 확인해주세요.'); return; }
       nav('guest', c);
@@ -374,14 +400,15 @@ function HomeView(props) {
         </GCard>
         <div style={{borderRadius:12,border:'2px solid '+C.line,backgroundColor:C.surface,padding:18}}>
           <div style={{fontSize:10,fontWeight:700,letterSpacing:'0.2em',textTransform:'uppercase',color:C.copper,marginBottom:6}}>참여</div>
-          <div style={{fontSize:15,fontWeight:700,color:C.ink,marginBottom:10}}>코드로 참여</div>
+          <div style={{fontSize:15,fontWeight:700,color:C.ink,marginBottom:10}}>코드 또는 링크로 참여</div>
           <div style={{display:'flex',gap:8}}>
             <input value={code} onChange={function(e){setCode(e.target.value);setErr('');}}
               onKeyDown={function(e){if(e.key==='Enter')join();}}
-              placeholder="8자리 코드"
-              style={{flex:1,minWidth:0,borderRadius:7,border:'1px solid '+C.line,padding:'8px 11px',fontSize:14,backgroundColor:C.inputBg,color:C.ink,outline:'none',fontFamily:'monospace',letterSpacing:'0.1em'}} />
+              placeholder="코드 8자리 또는 링크 붙여넣기"
+              autoComplete="off" autoCorrect="off" spellCheck="false"
+              style={{flex:1,minWidth:0,borderRadius:7,border:'1px solid '+C.line,padding:'10px 11px',fontSize:13,backgroundColor:C.inputBg,color:C.ink,outline:'none',fontFamily:FONT}} />
             <button onClick={join} disabled={joining}
-              style={{borderRadius:7,backgroundColor:C.copper,color:C.surface,border:'none',padding:'8px 14px',fontSize:13,fontWeight:700,cursor:'pointer'}}>
+              style={{borderRadius:7,backgroundColor:joining?C.line:C.copper,color:joining?C.muted:C.surface,border:'none',padding:'10px 16px',fontSize:14,fontWeight:700,cursor:joining?'not-allowed':'pointer',minWidth:56}}>
               {joining ? '...' : '참여'}
             </button>
           </div>
@@ -498,6 +525,7 @@ function AdminView(props) {
   var s6=useState(''); var toast=s6[0]; var setToast=s6[1];
   var s7=useState(false); var copied=s7[0]; var setCopied=s7[1];
   var codeRef=useRef(null);
+  var linkRef=useRef(null);
 
   function refresh() {
     loadGroup(gid, function(g) {
@@ -599,8 +627,34 @@ function AdminView(props) {
           </div>
         </div>
         <p style={{fontSize:12,color:C.muted,lineHeight:1.5}}>
-          지인들에게 이 <strong>8자리 코드</strong>를 알려주세요. 홈 화면 "코드로 참여"에 입력하면 주문할 수 있어요.
+          지인들에게 이 <strong>8자리 코드</strong>를 알려주세요. 홈 화면 "코드 또는 링크로 참여"에 입력하면 주문할 수 있어요.
         </p>
+        <div style={{marginTop:12,paddingTop:12,borderTop:'1px solid '+C.lineSoft}}>
+          <div style={{fontSize:11,fontWeight:700,color:C.copper,letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:8}}>또는 링크로 공유</div>
+          <div style={{display:'flex',gap:8}}>
+            <div style={{flex:1,minWidth:0,borderRadius:7,border:'1px solid '+C.line,padding:'8px 10px',fontSize:12,backgroundColor:C.inputBg,color:C.muted,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontFamily:'monospace'}}>
+              {(typeof window!=='undefined'?window.location.href.split('#')[0]:'')+'#g='+gid}
+            </div>
+            <button onClick={function(){
+              var link=(typeof window!=='undefined'?window.location.href.split('#')[0]:'')+'#g='+gid;
+              if(linkRef.current){
+                linkRef.current.select();
+                try{document.execCommand('copy');}catch(e){}
+              } else {
+                try{navigator.clipboard.writeText(link);}catch(e){}
+              }
+              setCopied('link'); setTimeout(function(){setCopied('');},2000);
+            }} style={{borderRadius:7,backgroundColor:copied==='link'?C.green:C.primary,color:C.surface,border:'none',padding:'8px 12px',fontSize:12,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap'}}>
+              {copied==='link'?'복사됨 ✓':'링크 복사'}
+            </button>
+          </div>
+          <input ref={linkRef} readOnly
+            value={(typeof window!=='undefined'?window.location.href.split('#')[0]:'')+'#g='+gid}
+            style={{position:'absolute',opacity:0,pointerEvents:'none',width:1,height:1}} />
+          <p style={{fontSize:11,color:C.muted,marginTop:6,lineHeight:1.5}}>
+            카카오톡·문자로 링크를 보내면 누르는 즉시 주문 화면으로 이동해요.
+          </p>
+        </div>
         <button onClick={function(){nav('guest',gid);}}
           style={{marginTop:8,fontSize:12,color:C.green,background:'none',border:'none',cursor:'pointer',textDecoration:'underline'}}>
           → 게스트 화면 미리보기
