@@ -180,14 +180,20 @@ function loadGroup(gid, cb) {
   });
 }
 
-/* 주문 로드: 항상 Supabase에서 최신 데이터 */
+/* 주문 로드: 메모리(즉시) + Supabase(최신) 병합 */
 function loadOrders(gid, cb) {
+  var fromMem = dbGetOrders(gid);
   supaGet('/orders?group_id=eq.'+gid+'&select=data&order=created_at.desc', function(rows) {
-    if (!rows) { cb(dbGetOrders(gid)); return; }
-    var orders = rows.map(function(r){return r.data;}).filter(Boolean);
-    if (!DB.orders[gid]) DB.orders[gid]={};
-    orders.forEach(function(o){ DB.orders[gid][o.id]=o; });
-    cb(orders);
+    if (!rows) { cb(fromMem); return; }
+    var fromSupa = rows.map(function(r){ return r.data; }).filter(Boolean);
+    /* 병합: Supabase 우선, 아직 저장 안 된 메모리 항목도 포함 */
+    var map = {};
+    fromSupa.forEach(function(o){ map[o.id] = o; });
+    fromMem.forEach(function(o){ if (!map[o.id]) map[o.id] = o; });
+    var merged = Object.values(map).sort(function(a,b){ return (b.submittedAt||0)-(a.submittedAt||0); });
+    if (!DB.orders[gid]) DB.orders[gid] = {};
+    merged.forEach(function(o){ DB.orders[gid][o.id] = o; });
+    cb(merged);
   });
 }
 
@@ -569,7 +575,12 @@ function AdminView(props) {
   }
   function onSaveOrder(order){
     var o=Object.assign({},order,{id:order.id||uid(10),submittedAt:order.submittedAt||Date.now()});
-    dbSaveOrder(gid,o);setEditing(null);refresh();
+    dbSaveOrder(gid,o);
+    setOrders(function(prev){
+      var rest=prev.filter(function(x){return x.id!==o.id;}); rest.unshift(o); return rest;
+    });
+    setEditing(null);
+    setTimeout(refresh, 1200);
   }
   function onDelGroup(){
     setConfirm({msg:'그룹과 모든 주문이 삭제됩니다.',onOk:function(){
@@ -773,8 +784,13 @@ function GuestView(props) {
   function onSave(order) {
     if (isExpired(group.deadline)){setScreen('list');return;}
     var o=Object.assign({},order,{id:order.id||uid(10),submittedAt:Date.now()});
-    dbSaveOrder(gid,o);dbMarkOrd(gid,o.id);
-    setEditing(null);setScreen('done');refresh();
+    dbSaveOrder(gid,o); dbMarkOrd(gid,o.id);
+    setMyOrders(function(prev){
+      var rest=prev.filter(function(x){return x.id!==o.id;}); rest.unshift(o); return rest;
+    });
+    setEditing(null); setScreen('done');
+    setTimeout(refresh, 1200);
+  }
   }
   function onRemove(oid) {
     setConfirm({msg:'이 주문을 취소할까요?',onOk:function(){
