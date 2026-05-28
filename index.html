@@ -791,7 +791,6 @@ function GuestView(props) {
     setEditing(null); setScreen('done');
     setTimeout(refresh, 1200);
   }
-  }
   function onRemove(oid) {
     setConfirm({msg:'이 주문을 취소할까요?',onOk:function(){
       dbDelOrder(gid,oid);dbUnmarkOrd(gid,oid);refresh();setConfirm(null);
