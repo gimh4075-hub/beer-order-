@@ -224,7 +224,7 @@ function downloadExcel(group, orders) {
         isShip?(rec.phone||order.ordererPhone||''):'',
         isShip?(rec.zip||''):'',
         isShip?(rec.addr||''):'',
-        it.note||'',
+        [it.note, order.deliveryNote].filter(Boolean).join(' / ') || '',
       ]);
     }
   }
