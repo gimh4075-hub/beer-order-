@@ -19,9 +19,29 @@ input[type=number]{-moz-appearance:textfield}
 .afd{animation:fd .25s ease-out}
 #loading{display:flex;align-items:center;justify-content:center;height:100vh;font-size:14px;color:#6F6A5E}
 </style>
+
+<!-- =============================================
+  🔒 사이트 열기/닫기 설정
+     열기: SITE_OPEN = true
+     닫기: SITE_OPEN = false
+============================================= -->
+<script>
+var SITE_OPEN = false;
+</script>
+
 </head>
 <body>
 <div id="loading">앱을 불러오는 중...</div>
+
+<div id="closed" style="display:none;min-height:100vh;background:linear-gradient(135deg,#071f14 0%,#0E3B2C 100%);display:flex;align-items:center;justify-content:center;font-family:'Pretendard Variable','Pretendard',-apple-system,sans-serif">
+  <div style="text-align:center;padding:40px 24px;color:#fff">
+    <div style="font-size:56px;margin-bottom:20px">🍺</div>
+    <div style="font-size:11px;font-weight:700;letter-spacing:0.25em;text-transform:uppercase;color:#E8D2B2;margin-bottom:12px">Heineken Korea · Internal Sales</div>
+    <h1 style="font-size:26px;font-weight:800;margin:0 0 12px;letter-spacing:-0.02em">사내판매 오더</h1>
+    <p style="font-size:15px;color:rgba(255,255,255,0.65);margin:0">현재 주문을 받고 있지 않아요.<br>담당자에게 문의해주세요.</p>
+  </div>
+</div>
+
 <div id="root" style="display:none"></div>
 <script type="text/babel">
 const { useState, useMemo, useEffect, useCallback, useRef } = React;
@@ -136,6 +156,9 @@ function supaDelete(path, cb) {
 
 /* ── 인메모리 캐시 (빠른 응답용) ──────────────────────────────── */
 var DB = { groups:{}, orders:{}, myGrps:{}, myOrds:{} };
+/* localStorage에서 내 주문/그룹 복원 */
+try { var _ls1=localStorage.getItem('myOrds'); if(_ls1) DB.myOrds=JSON.parse(_ls1); } catch(e){}
+try { var _ls2=localStorage.getItem('myGrps'); if(_ls2) DB.myGrps=JSON.parse(_ls2); } catch(e){}
 
 function dbSaveGroup(g)  { DB.groups[g.id]=g; supaPost('/groups', {id:g.id, data:g}); }
 function dbGetGroup(gid) { return DB.groups[gid]||null; }
@@ -146,11 +169,11 @@ function dbGetOrders(gid)   { return Object.values(DB.orders[gid]||{}).sort(func
 function dbDelOrder(gid,oid){ if (DB.orders[gid]) delete DB.orders[gid][oid]; supaDelete('/orders?id=eq.'+oid); }
 function dbDelGroupOrders(gid){ delete DB.orders[gid]; }
 
-function dbSaveMyGrp(info) { DB.myGrps[info.gid]=info; }
-function dbDelMyGrp(gid)   { delete DB.myGrps[gid]; }
+function dbSaveMyGrp(info) { DB.myGrps[info.gid]=info; try{localStorage.setItem('myGrps',JSON.stringify(DB.myGrps));}catch(e){} }
+function dbDelMyGrp(gid)   { delete DB.myGrps[gid]; try{localStorage.setItem('myGrps',JSON.stringify(DB.myGrps));}catch(e){} }
 function dbGetMyGrps()     { return Object.values(DB.myGrps).sort(function(a,b){return b.createdAt-a.createdAt;}); }
-function dbMarkOrd(gid,oid)  { if (!DB.myOrds[gid]) DB.myOrds[gid]={}; DB.myOrds[gid][oid]=true; }
-function dbUnmarkOrd(gid,oid){ if (DB.myOrds[gid]) delete DB.myOrds[gid][oid]; }
+function dbMarkOrd(gid,oid)  { if (!DB.myOrds[gid]) DB.myOrds[gid]={}; DB.myOrds[gid][oid]=true; try{localStorage.setItem('myOrds',JSON.stringify(DB.myOrds));}catch(e){} }
+function dbUnmarkOrd(gid,oid){ if (DB.myOrds[gid]) delete DB.myOrds[gid][oid]; try{localStorage.setItem('myOrds',JSON.stringify(DB.myOrds));}catch(e){} }
 function dbMyOrdIds(gid)     { return DB.myOrds[gid]||{}; }
 
 /* window.storage 백업 (실패해도 조용히 무시) */
@@ -561,11 +584,13 @@ function AdminView(props) {
   function showToast(msg){setToast(msg);setTimeout(function(){setToast('');},2000);}
 
   function copyCode(){
-    if (codeRef.current){
-      codeRef.current.select();
-      try{document.execCommand('copy');}catch(e){}
-      setCopied(true);setTimeout(function(){setCopied(false);},2000);
-    }
+    var text = gid;
+    navigator.clipboard.writeText(text).then(function(){
+      setCopied(true); setTimeout(function(){setCopied(false);},2000);
+    }).catch(function(){
+      if (codeRef.current){ codeRef.current.select(); try{document.execCommand('copy');}catch(e){} }
+      setCopied(true); setTimeout(function(){setCopied(false);},2000);
+    });
   }
 
   function onDelOrder(oid){
@@ -648,13 +673,12 @@ function AdminView(props) {
             </div>
             <button onClick={function(){
               var link=(typeof window!=='undefined'?window.location.href.split('#')[0]:'')+'#g='+gid;
-              if(linkRef.current){
-                linkRef.current.select();
-                try{document.execCommand('copy');}catch(e){}
-              } else {
-                try{navigator.clipboard.writeText(link);}catch(e){}
-              }
-              setCopied('link'); setTimeout(function(){setCopied('');},2000);
+              navigator.clipboard.writeText(link).then(function(){
+                setCopied('link'); setTimeout(function(){setCopied('');},2000);
+              }).catch(function(){
+                if(linkRef.current){linkRef.current.select();try{document.execCommand('copy');}catch(e){}}
+                setCopied('link'); setTimeout(function(){setCopied('');},2000);
+              });
             }} style={{borderRadius:7,backgroundColor:copied==='link'?C.green:C.primary,color:C.surface,border:'none',padding:'8px 12px',fontSize:12,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap'}}>
               {copied==='link'?'복사됨 ✓':'링크 복사'}
             </button>
@@ -1429,10 +1453,15 @@ function NFView(p){ return <div style={{paddingTop:60,textAlign:'center'}} class
 </div>; }
 
 
-document.getElementById('loading').style.display = 'none';
-document.getElementById('root').style.display = 'block';
-const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(React.createElement(App, null));
+if (SITE_OPEN) {
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('root').style.display = 'block';
+  const root = ReactDOM.createRoot(document.getElementById('root'));
+  root.render(React.createElement(App, null));
+} else {
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('closed').style.display = 'flex';
+}
 </script>
 </body>
 </html>
